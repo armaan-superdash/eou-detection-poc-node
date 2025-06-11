@@ -118,3 +118,5 @@ dist
 .pnp.*
 
 model_quantized.onnx
+model.onnx
+*.onnx

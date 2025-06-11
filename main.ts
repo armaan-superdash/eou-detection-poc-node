@@ -1,4 +1,5 @@
 import * as ort from "onnxruntime-node";
+import fs from "node:fs";
 import { AutoTokenizer, PreTrainedTokenizer } from "@huggingface/transformers";
 import { type TMessage } from "./tokenizerTypes";
 
@@ -65,56 +66,67 @@ async function calculateMessageEOU(messages: TMessage[], session: ort.InferenceS
     };
 
     const results = await session.run(feeds);
-    const logitsTensor = results.logits;
+    const logitsTensor = (results as unknown as {
+        prob: {
+            cpuData: Float32Array
+        }
+    }).prob;
+    console.log(results);
     
-    const [batchSize, sequenceLength, vocabSize] = logitsTensor.dims;
-    const batchIndex = 0;
-    const sequenceIndex = sequenceLength - 1; 
-    
-    
-    const startIndex = (batchIndex * sequenceLength * vocabSize) +
-        (sequenceIndex * vocabSize);
-    
-    const logitsData = logitsTensor.data as Float32Array;
-    const lastTokenLogits = logitsData.slice(startIndex, startIndex + vocabSize);
+    const logitsData = Array.from(logitsTensor.cpuData as Float32Array).flat();
+    console.log("logits data: ", logitsData);
+    // const lastTokenLogits = logitsData.slice(startIndex, startIndex + vocabSize);
     
     
-    let probabilities = softmaxOptimized(lastTokenLogits);
+    // let probabilities = softmaxOptimized(lastTokenLogits);
 
-    const endTokenIds = await tokenizer.encode("<|im_end|>", {
-        add_special_tokens: false
-    });
-    const endTokenId = endTokenIds[endTokenIds.length - 1];
+    // const endTokenIds = await tokenizer.encode("<|im_end|>", {
+    //     add_special_tokens: false
+    // });
+    // const endTokenId = endTokenIds[endTokenIds.length - 1];
     
-    return probabilities[endTokenId];
+    return logitsData[0];
 }
 
-async function simulateCall(session: ort.InferenceSession, tokenizer: PreTrainedTokenizer): Promise<void> {
+async function simulateCall(session: ort.InferenceSession, tokenizer: PreTrainedTokenizer, message: string): Promise<number[]> {
+    
     const contextMessages: TMessage[] = [{
         role: "user",
-        content: "what was the umm name of guy we met uh yesterday"
+        content: message
     }];
     
     try {
+        const startTime = Date.now();
         const eouProbability = await calculateMessageEOU(contextMessages, session, tokenizer);
-        console.log("EOU Probability:", eouProbability * 100 + "%");
+        const endTime = Date.now();
+        return [eouProbability * 100, endTime - startTime];
     } catch (error) {
         console.error("Error calculating EOU:", error);
+        throw error;
     }
 }
 
 async function initialize(): Promise<void> {
     try {
         console.log("Initializing ONNX Runtime...");
-        const session = await ort.InferenceSession.create("./model_quantized.onnx");
-        
+        const session = await ort.InferenceSession.create("./model.onnx");
         console.log("Loading tokenizer...");
         const tokenizer = await AutoTokenizer.from_pretrained("livekit/turn-detector", {
             local_files_only: false,
         });
-        
+        const testContent = fs.readFileSync("./testFile").toString().split("\n");
         const startTime = Date.now();
-        await simulateCall(session, tokenizer);
+        const result = [];
+        for(const test of testContent) {
+            const [prob, timeTaken] = await simulateCall(session, tokenizer, test);
+            result.push({
+                sentence: test,
+                prob,
+                timeTaken
+            });
+        }
+        const jsonResult = JSON.stringify(result);
+        fs.writeFileSync("./result.json", jsonResult);
         const endTime = Date.now();
         console.log("Time Took: ", endTime - startTime, "ms");
     } catch (error) {
